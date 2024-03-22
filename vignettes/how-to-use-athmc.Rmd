@@ -1,0 +1,121 @@
+---
+title: "How to use package athmc: automatically-tuned, hamiltonian Monte Carlo"
+output: rmarkdown::html_vignette
+bibliography: how-to-use-sbi.bib
+vignette: >
+  %\VignetteIndexEntry{How to use package athmc: automatically-tuned, hamiltonian Monte Carlo}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+sansfont: LiberationSans
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+
+## Introduction
+This tutorial gives a brief introduction to the package `athmc` and explains how to use it using examples.
+This package implements automatically-tuned, tempered Hamiltonian Monte Carlo developed by Park, J. (2024) "Sampling from high-dimensional, multimodal distribution using automatically-tuned, tempered Hamiltonian Monte Carlo" https://doi.org/10.48550/arXiv.2111.06871 
+
+## Getting started {#simll}
+The package can be installed from the [package author's github repository](https://github.com/joonhap/athmc) as follows.
+Doing so requires having the `devtools` package installed.
+```{r eval=FALSE}
+install.packages('devtools') # skip this line if `devtools` is already installed.
+```
+Then install the `athmc` package:
+```{r eval=FALSE}
+devtools::install_github("joonhap/athmc")
+```
+The package source code may be downloaded in tar.gz format [from here](.) (not active yet, as of Mar 2024).
+The package can be loaded as usual:
+```{r}
+library(athmc)  
+```
+
+### Example: mixture of log-polynomial distributions
+We consider target densities given by
+$$\pi(x) \propto e^{-\Vert x-\mu_1\Vert^\gamma} + e^{-\Vert x - \mu_2\Vert^\gamma}, \quad x\in \mathsf R^{10000},$$
+where $\Vert \mu_1 - \mu_2 \Vert = 400$ and $\gamma$ is varied.
+The target density and its gradient are defined as R functions as follows (`target` and `gd.target`). The function `closest_mode` outputs the closest mode (1 or 2) to the given point `x`.
+```{r}
+## a probability distribution with a mixture of 2 distributions whose negative log densities are polynomial in an arbitrary dimension
+x.d <- 10000
+modeDist <- 400 ## the distance between two modes
+comp.sd <- 1 # the sd of each mixture component of the target density
+set.seed(12403)
+direction <- {raw.direction <- rnorm(x.d); raw.direction/sqrt(sum(raw.direction^2))}
+modes <- outer(c(-1,1), modeDist*direction/2)
+
+target <- function(x, gamma, give_log=TRUE) { ## target denstiy (up to an additive constant)
+    ## gamma: polynomial degree of growth of negative target density
+    if (x.d != length(x)) {
+        stop("the length of x does not equal the specified dimension (x.d)") }
+    lpdfs <- apply(modes, 1, function(mode) -sum((mode-x)^2)^(gamma/2))
+    maxlpdf <- max(lpdfs)
+    lmixpdf <- maxlpdf + log(sum(exp(lpdfs-maxlpdf))) - log(2)
+    return(ifelse(give_log, lmixpdf, exp(lmixpdf)))
+}
+
+gd.target <- function(x, gamma) { ## gradient of the log of the target density
+    ## gamma: polynomial degree of growth of negative target density
+    if (x.d != length(x)) stop("the length of x does not equal the specificed dimension (x.d)")
+    distSqs <- apply(modes, 1, function(mode) sum((mode-x)^2))
+    weights <- exp(-(distSqs-min(distSqs))^(gamma/2)) # relative weights, scaled to avoid numerical instability
+    return(-gamma*(weights[1]*(x-modes[1,])*distSqs[1]^(gamma/2-1)+weights[2]*(x-modes[2,])*distSqs[2]^(gamma/2-1))/sum(weights))
+}
+
+## name the mode that a point is closest to
+closest_mode <- function(x) {
+    dists <- apply(modes, 1, function(v) sum((x-v)^2))
+    return(which.min(dists))
+}
+```
+
+## Running ATHMC
+```{r}
+niter <- 10 # length of each constructed chain
+truepower <- 2 # the polynomial degree of U is 2. That is, the target is a mixture of Gaussians.
+## construct a chain
+set.seed(829857)
+x.init <- modes[1,] + comp.sd*rnorm(x.d)
+logtarget <- function(x) { target(x, power.truth, TRUE) };
+gradlt <- function(x) { gd.target(x, power.truth) }
+chain <- ATHMC(x.init, logtarget, gradlt, sumstat=closest_mode, massInv=1, niter, power=1, jsize=0.1, maxEta=5, lenEta=200, etaType="piecewiselinear", tune=TRUE, MaxTuningIter=70, maxEta_tuning_method="rectangular", search_scale=rep(7,x.d), center_point=rep(0,x.d))
+```
+
+The above code constructs a chain using ATHMC with the given initial state `x.init` for the target density defined above.
+The constructed chain length is 151 (`niter`$+1$, including the initial state). 
+The starting values for the tuning parameters are as follows: the estimated polynomial degree of $U$, $\hat\gamma=1$ (`power`), the baseline leapfrog step size $\bar\epsilon=0.1$ (`jsize`), the maximum value of the mass-scaling schedule $\eta_*=5$ (`maxEta`), the length of the mass-scaling schedule $K=200$ (`lenEta`).
+The mass-scaling schedule is defined by $\eta_k = \frac{2\eta_*}{K} \min(k, K-k)$, $k=0, \frac{1}{2}, 1, \dots, K-\frac{1}{2}, K$ (`etaType="piecewiselinear"`).
+For each MCMC iteration, the parameters $\hat\gamma$, $\bar\epsilon$, $\eta_*$, and $K$ are tuned, starting from the tuned values from the previous iteration (`tune=TRUE`), except that the tuning for $\eta_*$ starts from the previous value minus one (but always greater than or equal to 0.5).
+The maximum number of tuning cycles per MCMC iteration is `MaxTuningIter=70`.
+The `maxEta` parameter is tuned such that every coordinate of the simulated path reaches outside the interval `center_point[j]`$\pm$`search_scale[j]` at least once during the simulation, $j=1,\dots, d$, where $d$ is the space dimension (`maxEta_tuning_method="rectangular"`).
+If instead `maxEta_tuning_method="ellipsoidal"`, then an ellipsoidal search scope is used: $\max_{k\in 0\col K} \sum_{j=1}^d \{x_j\{k\} - x_j^0\}^2 / s_j^2 > d$, where $x_j\{k\}$ is the $j$-th coordinate of the $k$-th intermediate point along the numerically simulated path, $x^0$ is the `center_point`, and $s_j$ is the `search_scale`.
+
+The output is a list consisting of several named entries.
+```{r}
+chain
+```
+
+* `sumstat_MCMC`: a matrix with `niter+1` rows, where each row gives the `sumstat` function applied to a state in the constructed chain.
+* `lenEta_chrono`: a vector of length `niter+1` recording the tuned values for the length of the eta (mass-scaling) schedule at the end of each iteration. The first value gives the initial, supplied value.
+* `jsize_chrono`: a vector of length `niter+1` recording the tuned values for the baseline leapfrog step size.
+* `power_chrono`: a vector of length `niter+1` recording the estimated polynomial degree of the potential function growth ($\hat\gamma$).}
+* `maxEta_chrono`: a vector of length `niter+1` recording the tuned maximum value of the eta sequence.}
+* `tuningIter_chrono`: a vector of length `niter` recording the number of tuning cycles for each MCMC iteration.
+* `Hinc_chrono`: a vector of length `niter` recording the net increase in Hamiltonian over the trajectory constructed after tuning for that iteration.
+
+As you can see from the plot below, ATHMC can construct chains that facilitate transitions between isolated modes for high-dimensional ($d=10000$), strongly-multimodal distributions.
+
+```{r}
+plot(chain$sumstat_MCMC)
+```
+
+### References
+Park, J. (2024). Sampling from high-dimensional, multimodal distributions using automatically-tuned, tempered Hamiltonian Monte Carlo <https://doi.org/10.48550/arXiv.2111.06871>
+

@@ -1,0 +1,486 @@
+---
+title: "How to use package athmc: automatically-tuned, hamiltonian Monte Carlo"
+output: rmarkdown::html_vignette
+bibliography: how-to-use-sbi.bib
+vignette: >
+  %\VignetteIndexEntry{How to use package sbi: simulation-based inference}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+sansfont: LiberationSans
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+library(ggplot2)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+```
+
+\newcommand\MESLE{\text{MESLE}}
+\newcommand\J{\mathcal J}
+\newcommand\E{\mathbb E}
+\newcommand\N{\mathcal N}
+\newcommand\logit{\text{logit}}
+
+## Introduction
+This tutorial introduces you to the package `sbi` and explains how to use it using examples.
+This package implements parameter inference methods for stochastic models defined implicitly by a simulation algorithm, developed by Park, J. (2023) "On simulation-based inference for implicilty defined models" https://doi.org/10.48550/arXiv.2311.09446.
+First, the methodological and theoretical framework for inference is explained.
+Then how to create an `R` object that contains simulation-based log-likelihood estimates will be explained.
+How to carry out a hypothesis test will be explained first for independent and identically distributed (iid) data using a toy example.
+Conducting hypothesis tests for a certain class of models generating dependent observations will be explained next using an example of stochastic volatility model.
+
+## Mathematical framework
+This section provides a mathematical basis for the methods implemented in the package `sbi`.
+Further details can be found in the article @park2023simulation.
+If you want to learn only about how to use the package, you may skip to the [next section](#simll).
+
+We consider a collection of latent random variables $X$ distributed according to $P_\theta$, and partial observations $Y$ whose conditional distributions have density $g(y|x;\theta)$.
+The underlying process $P_\theta$ is not assumed to have a density that can be evaluated analytically pointwise.
+The parameter $\theta$ may affect both the latent process $X$ and the conditional measurement process $Y$ given $X$; however, $\theta$ may comprise two components each governing the latent process or the measurement process only.
+
+The goodness of fit to the observed data is assessed for a set of parameter values $\theta_1,\dots, \theta_M$, by simulating the underlying process at the given parameter value and obtaining a _log_ likelihood estimate.
+There may be duplicates among $\theta_{1:M}$, meaning that independent simulations were carried out at the parameter value.
+The reason that estimates of the _log_ likelihood estimates are used is that the variance of the likelihood estimate (on the natural, i.e., non-log scale) often scales exponentially with the size of the data, and the distribution of likelihood estimator is often highly skewed.
+However, the distribution of a _log_ likelihood estimator is often sufficiently regular.
+Therefore by modeling the distribution of log likelihood estimator, one might be able to use _all_ simulation-based log likelihood estimates for inference, rather than only a small fraction of simulations where the likelihood estimate is reasonably close to the exact likelihood.
+
+Our approach is based on a _simulation metamodel_ for log likelihood estimates given by
+$$\ell^S(\theta;y_{1:n}) \sim \N\left\{a(y_{1:n}) + b(y_{1:n})^\top \theta + \theta^\top c(y_{1:n})\theta, \, \frac{\sigma^2(y_{1:n})}{w(\theta)}\right\}$$
+where $\ell^S(\theta; y_{1:n})$ denotes the _simulation log-likelihood_ at $\theta$, or the estimate of the log likelihood $\ell(\theta;y_{1:n})$ given the observations $y_{1:n}$.
+The simulation log-likelihood may be obtained in as simple a way as $\ell^S(\theta; y_{1:n}) := g(y_{1:n}|X;\theta)$ where $X\sim P_\theta$ is a certain simulation outcome of the underlying process at $\theta$.
+However, it may be obtained by using a different method, e.g., the particle filter for hidden Markov models.
+The mean function is a quadratic polynomial in $\theta$.
+This meta model is supposed to give a _local_ description of the distribution of the simulation log-likelihood around the maximum of the mean function.
+The variance depends on parameter specific value $w(\theta)$, which may be approximated to be a constant if the variance of simulation log-likelihood varies little in this local neighborhood.
+If simulations were carried out with different precisions at different parameter values, $w(\theta)$ may be chosen to reflect the relative differences.
+For example, if the simulation log-likelihoods are obtained by running the particle filter, then the variance in the log-likelihood estimate approximately scales inversely proportional to the number of particles used. 
+In this case, $w(\theta)$ may be chosen proportional to the number of particles.
+
+We assume that the simulation log-likelihood for _each observation piece_ $\ell^S(\theta; y_i)$ is available for $i\in 1:n$.
+For instance, it may be given by $\ell^S(\theta; y_i) = g_i(y_i|X;\theta)$ where $g_i$ is the measurement density of the $i$-th observation piece and $X$ is a simulated draw from $P_\theta$.
+If the observations $y_i$, $i\in 1:n$ are conditionally independent given $X$, $g(y_{1:n}|X;\theta) = \prod_{i=1}^n g_i(y_i|X;\theta)$, and thus we have
+$$ \ell^S(\theta; y_{1:n}) = \sum_{i=1}^n \ell^S(\theta;y_i).$$
+
+The maximizer of the mean function $\mu(\theta;y_{1:n}) := a(y_{1:n}) + b(y_{1:n})^\top \theta + \theta^\top c(y_{1:n})\theta$ is called the _maximum expected simulation log-likelihood estimator_ (_MESLE_) and denoted by $\hat\theta_{\MESLE}$.
+
+#### Parameter inference using local asymptotic normality (LAN) for simulation log-likelihood
+Parameter inference is carried out by analyzing the distribution of the quadratic mean function $\mu(\theta;Y_{1:n})$ where $Y_{1:n}$ are partial observations of the underlying system realized at a given parameter value $\theta_0$.
+We use a local approximation drawn from the following asymptotic result, which is satisfied under reasonably mild regulatory conditions.
+The maximizer of the mean function averaged over the data distribution under $\theta_0$ will be referred to as a _simulation-based surrogate_.
+It  will be denoted by $\J(\theta_0)$ or simply by $\theta_*$ when the dependence on the true parameter value $\theta_0$ is not stressed.
+$$ \J(\theta_0) = \arg\max_\theta \E_{X\sim P_{\theta_0}} \E_{Y|X \sim g(\cdot|X, \theta_0)} ~\mu(\theta; Y_{1:n}).$$
+In general, $\J(\theta_0) \neq \theta_0$, but there are some simple examples where $\J(\theta_0) = \theta_0$.
+
+The change in the mean function $\mu(\theta)$ on a $O(1/\sqrt{n})$ scale can be described by
+$$\mu(\theta_* + \frac{t}{\sqrt n}; Y_{1:n}) - \mu(\theta_*; Y_{1:n}) \approx S_n^\top t - \frac{1}{2} t^\top K_2 (\theta_*; \theta_0) t$$
+where the difference between the left and the right hand side converges to zero in probability as $n\to\infty$.
+The probabilistic statement is with respect to the randomness in the observations generated under a true parameter value denoted by $\theta_0$.
+The random variable $S_n$ given by
+$$S_n := \frac{1}{\sqrt n} \left.\frac{\partial \mu}{\partial \theta}\right\vert_{\theta=\theta_*}(\theta; Y_{1:n}),$$
+which converges in distribution to $\N(0, K_1(\theta_*;\theta_0))$, where $K_1(\theta_*;\theta_0)$ is a positive definite matrix.
+
+The matrix $K_2(\theta_*;\theta_0)$ is defined by the in-probability limit 
+$$-\frac{1}{n} \frac{\partial^2 \mu}{\partial \theta^2} (\theta_*; Y_{1:n}) \overset{i.p.}{\underset{n\to\infty}{\to}} K_2(\theta_*;\theta_0)$$
+where $Y_{1:n}$ are generated under $\theta_0$.
+
+Inference is carried out by considering both the randomness in simulations and the randomness in observed data under a given parameter.
+The main tool is regression through the points $(\theta_m, \ell^S(\theta_m; y_{1:n}))$, $m\in 1:M$ by a quadratic polynomial.
+When $w(\theta_m)$, $m\in 1:M$ are not all the same, we carry out weighted quadratic regression with weights $w(\theta_m)$, $m\in 1:M$.
+
+
+## Getting started {#simll}
+The package can be installed from the [package author's github repository](https://github.com/joonhap/sbi) as follows.
+Doing so requires having the `devtools` package installed.
+```{r eval=FALSE}
+install.packages('devtools') # skip this line if `devtools` is already installed.
+```
+Then install the `sbi` package:
+```{r eval=FALSE}
+devtools::install_github("joonhap/sbi")
+```
+The package source code may be downloaded in tar.gz format [from here](.) (not active yet, as of Dec 2023).
+The package can be loaded as usual:
+```{r}
+library(sbi)  
+```
+
+The simulation-based inference is carried out using the `ht` function.
+When the parameter of interest is one-dimensional, confidence intervals may be constructed using the `ci` function.
+
+#### An example: gamma-Poisson observations
+As an example, we consider a latent process $X$ consisting of $n$ iid copies of gamma random variates, denoted by $(X_1, \dots, X_n)\overset{iid}\sim \Gamma(1, \theta)$ where the shape parameter is unity and the rate parameter is $\theta$.
+Partial observations $Y_i$ depend only on $X_i$ and Poisson-distributed: $Y_i|X_i \sim \text{Pois}(X_i)$.
+The observations $y_{1:n}$ are generated under $\theta = \theta_0 = 1$.
+For this model, the maximum expected simulation log-likelihood estimator (MESLE) is given by $1/\bar y = \frac{n}{\sum_{i=1}^n y_i}$, which is equal to the maximum likelihood estimator (MLE) given the observations $y_{1:n}$ (see Example 2 in @park2023simulation for mathematical details.)
+Furthermore, the simulation-based surrogate $\J(\theta_0)$ is equal to $\theta_0$.
+
+```{r}
+n <- 1000 # number of iid observations
+gamma_t <- 1 # true shape parameter 
+theta_t <- 1 # true rate parameter
+set.seed(98475)
+## Marginally, observations are distributed following the negative binomial distribution.
+y_o <- rnbinom(n=n, size=gamma_t, prob=theta_t/(theta_t+1)) # observed data (y_1,...,y_n). 
+MESLE <- gamma_t*n/sum(y_o) # MESLE for theta (= MLE)
+sims_at <- seq(.8, 1.2, by=.001) # theta values at which simulations are made
+llest <- sapply(sims_at, function(tht) {dpois(y_o, rgamma(n, gamma_t, rate=tht), log=TRUE)})
+```
+The `llest` object is a matrix with $n=1000$ rows and $M=401$ column.
+Here $M$ is the number of parameter values at which simulations are carried out (i.e., the length of `sims_at`).
+The $(i,m)$-th entry of `llest` gives the simulation log-likelihood $\ell^S(\theta_m; y_i)$ for the $i$-th observation piece at $\theta_m$.
+
+We create a class `simll` object which contains both the simulation log-likelihoods (`llest`) and the corresponding parameter values (`sims_at`).
+```{r}
+s <- simll(llest, params=sims_at)
+```
+
+## Hypothesis test on the maximum expected simulation log-likelihood estimator (MESLE)
+Hypothesis tests can be carried out for both the MESLE and the simulation-based surrogate.
+Note that the MESLE is a statistic that depends on the observed data $y_{1:n}$, like the MLE.
+The MESLE needs to be _estimated_ using simulations, because the likelihood function is not accessible analytically.
+We can test $H_0: \hat \theta_\MESLE = \theta_{\MESLE,0}$, $H_1: \hat \theta_\MESLE \neq \theta_{\MESLE,0}$ for multiple null values $\theta_{\MESLE,0}$ simultaneously.
+The null values can be passed to the `ht` function as an argument `null.value` in different forms.
+If we test for a single null value, it can be a vector of length $d$, where $d$ is the dimension of the parameter space (for the current example, $d=1$.)
+If more than null values are tested, `null.value` can be either a matrix having $d$ columns where each row gives a null value vector, or a list of vectors of length $d$.
+```{r}
+nulls_theta <- c(seq(.8, 1.2, by=.05), MESLE) # null values to be tested
+```
+We test about the MESLE for a range of values between 0.8 and 1.2 as well as the exact value of the MESLE (=\bar y).
+Since the parameter in the current example is one-dimensional, `nulls_theta` is a numeric vector.
+If it is supplied to the `ht` function as-is, `ht` will think that we are testing about a single parameter value of dimension `length(nulls_theta)`, which is not what we want.
+Thus we supply the null values by coercing `nulls_theta` into a list using `as.list`.
+The `test` argument `"MESLE"` indicates that we are testing about the MESLE.
+```{r}
+ht_result <- ht(s, null.value=as.list(nulls_theta), test="MESLE")
+```
+The output is a list consisting of several components. 
+First, the estimated regression coefficients $\hat a$, $\hat b$, $\hat c$, as well as the estimated error variance $\hat \sigma^2$ are given (`$regression_estimates`).
+The simulation metamodel defines a metamodel likelihood for the obtained simulation log-likelihoods $\ell^S(\theta_m; y_{1:n})$.
+The maximizer of this metamodel likelihood, which gives a point estimate for the MESLE, is outputted as well (`$meta_model_MLE_for_MESLE`).
+Next, a table consisting of the null values and the corresponding p-values are outputted (`$Hypothesis_Tests`).
+Finally, in order to assess the degree to which the weighted quadratic regression was appropriate, regression using a cubic polynomial is carried out and the p-value for the significance of the cubic terms is given (`$pval_cubic`).
+If `pval_cubic` is too small (say $<0.01$), then the inference using the quadratic regression may be considered as biased, and the range of parameter values for simulation may need to be narrowed down.
+```{r}
+ht_result
+```
+The `ci` function constructs a one-dimensional confidence interval for the parameter.
+```{r}
+cci <- ci(s, level=c(.9, .95), ci="MESLE") # constructed confidence intervals
+```
+The following figure gives the simulation log likelihoods and the constructed confidence intervals for $\hat\theta_\MESLE$. 
+The vertical dashed line indicates the MESLE. The blue curve indicates the fitted quadratic polynomial, and the red curve the exact log-likelihood function with a vertical shift to facilitate ready comparison of the curvature between the fitted curve and the exact log likelihood.
+```{r, echo=FALSE, fig.width=6}
+coef_est <- ht_result$regression_estimates 
+est_quad <- function(x) coef_est[[1]] + c(coef_est[[2]])*x + c(coef_est[[3]])*x^2
+## exact log-likelihood
+ll_exact <- function(x) { dnbinom(sum(y_o), gamma_t*n, x/(x+1), log=TRUE) }
+## exact log-likelihood, shifted in y-direction
+ll_sub <- function(x) { ll_exact(x) - ll_exact(MESLE) + est_quad(MESLE) } 
+sll <- apply(unclass(s), 2, sum) # simulation log likelihood (for all observations)
+gg_gp_simll <- ggplot(data.frame(theta=sims_at, sll=sll), aes(x=theta, y=sll)) +
+    geom_point(size=.5) 
+gg_gp_simll + geom_function(fun=est_quad, linetype="longdash", color='blue') +
+    geom_function(fun=ll_sub, linetype="longdash", color='red') + xlab('theta') +
+    ylab('simulation log-likelihood') +
+    geom_vline(data=data.frame(
+        kind=factor(c("MESLE",rep("CI90",2),rep("CI95",2)), levels=c("MESLE","CI90","CI95")),
+        value=c(MESLE, cci$confidence_interval[1,2:3], cci$confidence_interval[2,2:3])),
+        aes(xintercept=value, linetype=kind)) +
+    scale_linetype_manual(name="", labels=c("MESLE", "90% CI", "95% CI"),
+        values=c(MESLE="dashed",CI90="dotdash",CI95="dotted")) +
+    theme(legend.position="top", panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank())
+```
+
+## Hypothesis test on the simulation-based surrogate
+The simulation-based surrogate $\J(\theta_0)$ for this example is equal to $\theta_0$, the true parameter value under which the observations were generated.
+We can carry out a hypothesis test $H_0: \J(\theta_0) = \theta_{*,0}$, $H_1: \J(\theta_0) \neq \theta_{*,0}$ using the `ht` function with the `test` argument set equal to `"parameter"` (the default).
+We use the same set of simulation log-likelihoods stored in `s` and the same collection of null values used for the test on the MESLE. 
+For hypothesis testing for the simulation-based surrogate, we need to let the `ht` function know that the observations are iid so that the uncertainty may be correctly quantified.
+This can be done by passing the character string `"iid"` to the `case` argument.
+By default, the `ht` function assumes that the observations form a serially dependent, stationary sequence, which corresponds to `case="stationary"`.
+This case will be discussed in the next section.
+```{r}
+ht_result <- ht(s, null.value=as.list(nulls_theta), test="parameter", case="iid")
+ht_result
+```
+
+
+
+## Inference for non-iid observations
+When the observations are not iid, the hypothesis test on the MESLE is carried out in the same way as in the iid case, but the hypothesis test for the simulation-based parameter surrogate is carried out in a different way.
+The reason for the difference for the non-iid case is that when estimating the unknown value of $K_1(\theta_*;\theta_0)$, the auto-correlation among $\frac{\partial \mu}{\partial \theta}(\theta_*; y_{1:n})$ need to be taken into consideration.
+We demonstrate hypothesis test on the simulation-based surrogate for the non-iid case using the following example.
+
+#### Stochastic volatility model
+We consider a stochastic volatility model where the distribution of the log rate of return $r_t$ of a stock at time $t$ is described by
+\[
+  r_t = e^{s_t} W_t, \quad W_t \overset{iid}{\sim} t_5,
+\]
+where $s_t$ denotes the volatility at time $t$ and $t_5$ the $t$ distribution with five degrees of freedom.
+The distribution of the stochastic volatility process $\{s_t\}$ is described by
+\[
+  s_t = \kappa s_{t-1} + \tau \sqrt{1-\kappa^2} V_t ~~\text{for}~ t>1, \quad s_1 = \tau V_1, \quad   \quad V_t \overset{iid}{\sim} \N(0,1).
+\]
+The rates of return $r_t$ are observed for $t\in 1:T$ where $T=1000$.
+The stochastic volatility $\{s_t; t \in 1 : T\}$ is a Markov process with partial observations $\{r_t; t\in 1:T\}$.
+We simulate the stochastic volatility process for $\kappa=0.8, \tau=1$ and generate an observed data sequence $r_{1:T}$.
+
+Unbliased likelihood estimates for the sequence of observations may be obtained by the bootstrap particle filter, which uses an ensemble of Monte Carlo draws called particles simulated under a given set of parameters.
+We may use the logarithm of the obtained unbiased likelihood estimates as the simulation log-likelihoods for inference on the parameter surrogate.
+The bootstrap particle filter can be run using the package `pomp` with the reasonably small amount of effort of specifying the underlying process and the measurement process models.
+```{r message=FALSE}
+library(pomp)
+```
+The stochastic volatility model can be defined in the `pomp`-style as follows.
+```{r}
+# Stochastic volatility model
+SV_pomp <- function(t0, times, kappa, tau, sim_seed=NULL) {
+
+    rinit <- pomp::Csnippet("
+        s = tau*rnorm(0,1);
+    ")
+
+    rproc <- pomp::Csnippet("
+        s = kappa*s + tau*sqrt(1-kappa*kappa)*rnorm(0,1);
+    ")
+
+    rmeas <- pomp::Csnippet("
+        r = exp(s)*rt(5);
+    ")
+    
+    dmeas <- pomp::Csnippet("
+        double logdmeas = dt(r*exp(-s), 5, 1) - s;
+        lik = (give_log) ? logdmeas : exp(logdmeas);
+    ")
+
+    if (!is.null(sim_seed)) {
+        set.seed(sim_seed)
+    }
+    
+    pomp::simulate(t0=t0, times=times,
+        rinit=rinit,
+        rprocess=pomp::discrete_time(rproc,delta.t=1),
+        rmeasure=rmeas,
+        dmeasure=dmeas,
+        params=c(kappa=kappa, tau=tau),
+        statenames = "s",
+        obsnames = "r",
+        paramnames = c("kappa", "tau")
+    )
+}
+```
+
+The observations $r_t$ for $t=1,\dots, T=500$ are generated under $\kappa = 0.8$ and $\tau = 1$.
+The parameter $\kappa$ is constrained to be between 0 and 1, and $\tau$ has the positivity constraint.
+In order to remove the constraints, we estimate $\kappa$ and $\tau$ on the logit and the log scale, respectively.
+```{r}
+t0 <- 0
+T <- 500
+times <- 1:T
+kappa_t <- 0.8
+tau_t <- 1
+theta_t <- c(kappa=kappa_t, tau=tau_t) # true parameter value
+theta_Est <- c(kappa=logit(kappa_t), tau=log(tau_t)) # true parameter on the estimation scale
+# simulate the process and generate data
+SV_t <- SV_pomp(t0, times, kappa_t, tau_t, sim_seed=1554654) 
+r_o <- obs(SV_t) # generated observation sequence
+dat_raw <- data.frame(time=time(SV_t), latent=c(states(SV_t)), obs=c(r_o))
+dat <- pivot_longer(dat_raw, -time)
+parnames <- c("kappa", "tau") 
+trans <- list(logit, log) # functions to use for transformations to the estimation scale
+btrans <- list(plogis, exp) # functions for transformations back to the original scale
+transnames <- c("logit(kappa)", "log(tau)")
+```
+
+The bootstrap particle filter was run at varied parameter values $\theta = (\kappa, \tau)$ to obtain likelihood estimates using the `R` package `pomp` (@king2016statistical, @king2023pomp).
+The logarithm of the likelihood estimates were used as the simulation log-likelihoods $\ell^S(\theta; r_{1:T})$.
+
+We first consider estimation of $\kappa$ on the logit scale.
+Simulations are carried out at equally spaced points between the true $\logit(\kappa)$ value $\pm$ 1.
+The width for the simulation points is chosen in a way that balance the bias and the variance in the test.
+Specifically, it is roughly chosen such that it is as large as possible while ensuring that the p-value for the test on the cubic coefficient in the regression polynomial is distributed close to the uniform distribution.
+```{r, warning=FALSE, fig.width=3.4, fig.height=2.7}
+sim_widths <- c(1, .4) 
+inc <- c("kappa") # parameter being estimated
+parid <- which(parnames%in%inc)
+M <- 100 # number of simulation points
+Np <- 100 # number of particles used by the bootstrap particle filter
+# simulation points are uniformly spaced between the true value +-1
+sims_incl_Est <- cbind(seq(theta_Est[inc] - sim_widths[parid], theta_Est[inc] + sim_widths[parid],
+    length.out=M)) |> `colnames<-`(inc)
+sims_at_Nat <- outer(rep(1,M), theta_t)
+sims_at_Nat[,inc] <- sapply(1:length(inc), function(i) btrans[[parid[i]]](sims_incl_Est[,i]))
+set.seed(729875)
+llp_est <- simplify2array(lapply(1:nrow(sims_at_Nat), function(i) {
+    sp <- sims_at_Nat[i,]
+    ## run the particle filter for each simulation point
+    pfSV <- pfilter(pomp(SV_t, params=sp), Np=Np, save.state="weighted") 
+    ## estimate the simulation log-likelihood for each r_t
+    lme <- sapply(saved_states(pfSV)$weights, logmeanexp)
+    lme
+}))
+ll_est <- apply(llp_est, 2, sum)
+```
+The individual simulation log likelihood $\ell^S(\theta; r_t)$ for each $t$ was found by the average of the particle weights at time $t$ of the bootstrap particle filter.
+
+The `simll` object is created, and hypothesis tests for the parameter $\kappa$ is carried out as follows.
+```{r}
+s <- simll(llp_est, params=sims_incl_Est)
+null_values_Est <- cbind(theta_Est[inc]+sim_widths[parid]/5*(-10:10))
+colnames(null_values_Est) <- inc
+ht_result <- ht(s, null.value=null_values_Est, test="parameter", case="stationary")
+```
+The scaled variance $K_1(\theta_*;\theta_0) = \lim_{T\to\infty} \frac{1}{T} \text{Var}\left\{\frac{\partial \mu}{\partial \theta}(\theta; r_{1:T})\right\}$ can be estimated by dividing the observation sequence into continuous batches so that the estimates of the slope of the function $\mu$ are almost independent between batches.
+The default size of each batch is `round(n^{0.4})` where `n` is the number of observations.
+The default batch size can be overridden by supplying the `batch_size` argument.
+A different method for estimating $K_1$ is to use a truncated sum of autocovariances. 
+This can be done by setting `K1_est_method="autocov"`.
+
+Confidence intervals for $\logit(\kappa)$ can be constructed as follows.
+```{r}
+ci_result <- ci(s, level=c(.9,.95), ci="parameter", case="stationary")
+regcoef_k <- ci_result$regression_estimates
+# estimated expected simulation log-likelihood
+eesl <- function(x) { regcoef_k$a + regcoef_k$b*x + regcoef_k$c*x^2 } 
+vline_names <- c("true","CI90","CI95")
+dat <- data.frame(simll=ll_est)
+dat[inc] <- sims_incl_Est
+g1 <- ggplot(dat, aes(x=!!sym(inc), y=simll)) + geom_point() +
+    geom_function(fun=eesl, linetype="longdash") +
+    geom_vline(data=data.frame(
+        kind=factor(c("true",rep("CI90",2),rep("CI95",2)), levels=vline_names),
+        value=c(theta_Est[inc], ci_result$confidence_interval[1,2:3],
+            ci_result$confidence_interval[2,2:3])),
+        aes(xintercept=value, linetype=kind)) +
+    xlab(transnames[parid]) + ylab('simulation log-likelihood') +
+    scale_linetype_manual(name="", labels=c("true", "90%CI", "95%CI"),
+        values=c(true="dashed", CI90="dotdash", CI95="dotted")) +
+    theme(legend.position="bottom")
+g1
+```
+
+Similarly, parameter inference for $\log(\tau)$ can be carried out as follows.
+The simulation points are equally spaced within $\pm 0.4$ of the log of the true $\tau$ value.
+```{r, warning=FALSE, fig.width=3.4, fig.height=2.7}
+sim_widths <- c(1, .4) 
+inc <- c("tau") # parameter being estimated
+parid <- which(parnames%in%inc)
+M <- 100
+Np <- 100
+# simulation points are uniformly spaced between the true value +-.4
+sims_incl_Est <- cbind(seq(theta_Est[inc] - sim_widths[parid], theta_Est[inc] + sim_widths[parid],
+    length.out=M)) |> `colnames<-`(inc)
+sims_at_Nat <- outer(rep(1,M), theta_t)
+sims_at_Nat[,inc] <- sapply(1:length(inc), function(i) btrans[[parid[i]]](sims_incl_Est[,i]))
+set.seed(729875)
+llp_est <- simplify2array(lapply(1:nrow(sims_at_Nat), function(i) {
+    sp <- sims_at_Nat[i,]
+    pfSV <- pfilter(pomp(SV_t, params=sp), Np=Np, save.state="weighted")
+    lme <- sapply(saved_states(pfSV)$weights, logmeanexp)
+    lme
+}))
+ll_est <- apply(llp_est, 2, sum)
+s <- simll(llp_est, params=sims_incl_Est)
+null_values_Est <- cbind(theta_Est[inc]+sim_widths[parid]/5*(-10:10))
+colnames(null_values_Est) <- inc
+ht_result <- ht(s, null.value=null_values_Est, test="parameter", case="stationary")
+dat <- data.frame(simll=ll_est)
+dat[inc] <- sims_incl_Est
+ci_result <- ci(s, level=c(.9,.95), ci="parameter", case="stationary")
+regcoef_t <- ci_result$regression_estimates
+eesl <- function(x) { regcoef_t$a + regcoef_t$b*x + regcoef_t$c*x^2 } # estimated expected simlation log-likelihood
+vline_names <- c("true","CI90","CI95")
+g2 <- ggplot(dat, aes(x=!!sym(inc), y=simll)) + geom_point() +
+    geom_function(fun=eesl, linetype="longdash") +
+    geom_vline(data=data.frame(kind=factor(c("true",rep("CI90",2),rep("CI95",2)), levels=vline_names),
+        value=c(theta_Est[inc], ci_result$confidence_interval[1,2:3],
+            ci_result$confidence_interval[2,2:3])),
+        aes(xintercept=value, linetype=kind)) +
+    scale_linetype_manual(name=NULL, labels=c("true", "90%CI", "95%CI"),
+        values=c(true="dashed",CI90="dotdash",CI95="dotted")) +
+    ylab('simulation log-likelihood') + xlab(transnames[parid]) + theme(legend.position="bottom")
+g2
+```
+
+We can estimate both parameters $(\logit(\kappa), \log(\tau))$ jointly.
+The hypothesis tests $H_0: (\kappa_*, \tau_*) = (\kappa_{*,0}, \tau_{*,0})$, $H_1: (\kappa_*, \tau_*) = (\kappa_{*,0}, \tau_{*,0})$ were carried out for varied null value pairs.
+The plot generated below shows the 80\%, 90\%, 95\% confidence regions, constructed by marking the null value pairs for which the p-value is greater than 20\%, 10\%, and 5\%, respectively.
+The true parameter pair is marked by an $X$.
+```{r, warning=FALSE, fig.width=2.4, fig.height=2.7}
+sim_widths <- c(.5, .2) 
+inc <- c("kappa", "tau") # parameters being estimated
+parid <- which(parnames%in%inc)
+M <- 400
+Np <- 100
+sims_incl_Est <- expand.grid(seq(theta_Est[inc[1]]-sim_widths[parid[1]], theta_Est[inc[1]]+sim_widths[parid[1]], length.out=sqrt(M)), seq(theta_Est[inc[2]]-sim_widths[parid[2]], theta_Est[inc[2]]+sim_widths[parid[2]], length.out=sqrt(M))) |> as.matrix() |> `colnames<-`(inc)
+sims_at_Nat <- outer(rep(1,M), theta_t)
+sims_at_Nat[,inc] <- sapply(1:length(inc), function(i) btrans[[parid[i]]](sims_incl_Est[,i]))
+set.seed(729875)
+llp_est <- simplify2array(lapply(1:nrow(sims_at_Nat), function(i) {
+    sp <- sims_at_Nat[i,]
+    pfSV <- pfilter(pomp(SV_t, params=sp), Np=Np, save.state="weighted")
+    lme <- sapply(saved_states(pfSV)$weights, logmeanexp)
+    lme
+}))
+ll_est <- apply(llp_est, 2, sum)
+s <- simll(llp_est, params=sims_incl_Est)
+null_values_Est <- expand.grid(theta_Est[inc[1]]+sim_widths[parid[1]]/5*(-10:10), theta_Est[inc[2]]+sim_widths[parid[2]]/5*(-10:10)) |> as.matrix() |> `colnames<-`(inc)
+ht_result <- ht(s, null.value=null_values_Est, test="parameter", case="stationary")
+dat <- data.frame(null_values_Est)
+g3 <- ggplot(dat %>% mutate(pval=ht_result$Hypothesis_Tests[,"pvalue"]) %>%
+             mutate(conflvl=cut(pval, breaks=c(0,0.05,0.1,0.2,1), right=FALSE)),
+    aes(x=!!sym(inc[1]), y=!!sym(inc[2]))) +
+    geom_point(aes(color=conflvl), size=0.6) +
+    xlab(transnames[parid[1]]) + ylab(transnames[parid[2]]) +
+    scale_color_manual(name="", labels=c("100%", "95%", "90%", "80%"),
+        values=rgb(0,0,0,c(0.05,0.25,0.5,1))) +
+    geom_point(aes(x=theta_Est[inc[1]], y=theta_Est[inc[2]]), shape=4, size=2) +
+    theme(legend.position="bottom")
+g3
+```
+
+## More on hypothesis tests
+#### Test on the metamodel parameters
+The test on the metamodel parameters, namely $a$, $b$, $c$, and $\sigma^2$ 
+$$ H_0: (a,b,c,\sigma^2) = (a_0,b_0,c_0, \sigma_0^2), ~~H_1: (a,b,c,\sigma^2) \neq (a_0,b_0,c_0, \sigma_0^2).$$
+can be carried out by passing the character string `"moments"` to the `test` argument for the `ht` function.
+The `null.value` argument can be the list of the four elements in the order of $(a_0, b_0, c_0, \sigma_0^2)$. 
+The second element ($b_0$) is a vector and the third element ($c_0$) is a matrix.
+When testing more than one null values, `null.value` should be a list of lists of length four.
+For tests on the MESLE or the simulation-based surrogate, the test statistic follows the $F$-distribution.
+The test statistic for the metamodel parameters follows what is named the $\textsf{SCL}$ distribution in @park2023simulation.
+The quantiles and the cdf of the $\textsf{SCL}$ distribution are numerically found by drawing a number of random values from the distribution.
+The number of random variables is roughly chosen such that the Monte Carlo standard error for the obtained p-value is approximately 0.01.
+However, if any of the obtained p-values is less than 0.01, a greater number of random numbers are drawn from the $\textsf{SCL}$ distribution so that the Monte Carlo standard error of the p-value is approximately 0.001.
+```{r}
+null_moments <- list(a=-984, b=c(25.8,-23.7), c=matrix(c(-8.25,8,8,-93),2,2), sigsq=5)
+ht(s, null.value=null_moments, test="moments")
+```
+
+#### Test on the mean and variance of the simulation log likelihood at a single parameter value
+Finally, the `ht` function can be used to test about the mean and the variance of the simulation log likelihood at a _single_ parameter value.
+For this, the `type` argument should be set to `"point"`.
+When the `type` argument is not provided, its default value is `"point"` if the object passed to the `simll` argument has no `params` attribute and `"regression"` otherwise.
+All hypothesis tests described in earlier sections used the default `type="regression"`.
+
+As an example, suppose that the simulation log likelihood is normally distributed with mean $\mu=0$ and variance $\sigma^2 = 1$.
+We artificially generate $M=50$ simulation log likelihoods from the standard normal distribution, and create a `simll` object without the `params` attribute.
+```{r}
+set.seed(1098204)
+s <- simll(rnorm(50, 0, 1))
+```
+For testing $H_0: (\mu, \sigma^2) = (\mu_0, \sigma_0^2)$, $H_1: (\mu, \sigma^2) \neq (\mu_0, \sigma_0^2)$, the `test` argument should be `"moments"` and the `type` argument should be `"point"`.
+The `null.value` is a vector of length two (one entry for the mean and the other for the variance of the simulation log likelihoods), a matrix of two columns (one for the mean and the other for the variance), or a list of vectors of length two (each entry of the list gives a null value consisting of the mean and the variance.)
+```{r}
+null_values <- rbind(c(0,1), c(0,0.8), c(0.2, 1))
+ht(s, null.value=null_values, test="moments", type="point")
+```
+
+
+### References
