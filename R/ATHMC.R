@@ -34,9 +34,7 @@
 #' @references Park, J. (2024). Sampling from high-dimensional, multimodal distributions using automatically-tuned, tempered Hamiltonian Monte Carlo <https://doi.org/10.48550/arXiv.2111.06871>
 #' @export
 ATHMC <- function(x.init, logtarget, gradlt, sumstat=identity, massInv=1, niter, power=2, jsize=0.1, maxEta=1, lenEta=200, etaType="piecewiselinear", tune=TRUE, MaxTuningIter=70, maxEta_tuning_method="rectangular", search_scale, center_point, Uthreshold, leapfrog) {
-    if (missing(leapfrog)) {
-        source('leapfrog.R')
-    } else {
+    if (!missing(leapfrog)) {
         lf <- leapfrog # use custom leapfrog function 
     }
     x.d <- length(x.init) # space dimension

@@ -1,9 +1,8 @@
 ---
-title: "How to use package athmc: automatically-tuned, hamiltonian Monte Carlo"
+title: "How to use package ATHMC: Automatically-tuned, Tempered Hamiltonian Monte Carlo"
 output: rmarkdown::html_vignette
-bibliography: how-to-use-sbi.bib
 vignette: >
-  %\VignetteIndexEntry{How to use package athmc: automatically-tuned, hamiltonian Monte Carlo}
+  %\VignetteIndexEntry{How to use package ATHMC: Automatically-tuned, Tempered, Hamiltonian Monte Carlo}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 sansfont: LiberationSans
@@ -18,10 +17,10 @@ knitr::opts_chunk$set(
 
 
 ## Introduction
-This tutorial gives a brief introduction to the package `athmc` and explains how to use it using examples.
+This tutorial gives a brief introduction to the package `ATHMC` and explains how to use it using examples.
 This package implements automatically-tuned, tempered Hamiltonian Monte Carlo developed by Park, J. (2024) "Sampling from high-dimensional, multimodal distribution using automatically-tuned, tempered Hamiltonian Monte Carlo" https://doi.org/10.48550/arXiv.2111.06871 
 
-## Getting started {#simll}
+## Installation
 The package can be installed from the [package author's github repository](https://github.com/joonhap/athmc) as follows.
 Doing so requires having the `devtools` package installed.
 ```{r eval=FALSE}
@@ -34,7 +33,7 @@ devtools::install_github("joonhap/athmc")
 The package source code may be downloaded in tar.gz format [from here](.) (not active yet, as of Mar 2024).
 The package can be loaded as usual:
 ```{r}
-library(athmc)  
+library(ATHMC)  
 ```
 
 ### Example: mixture of log-polynomial distributions
@@ -78,8 +77,8 @@ closest_mode <- function(x) {
 
 ## Running ATHMC
 ```{r}
-niter <- 10 # length of each constructed chain
-truepower <- 2 # the polynomial degree of U is 2. That is, the target is a mixture of Gaussians.
+niter <- 20 # length of each constructed chain
+power.truth <- 2 # the polynomial degree of U is 2. That is, the target is a mixture of Gaussians.
 ## construct a chain
 set.seed(829857)
 x.init <- modes[1,] + comp.sd*rnorm(x.d)
@@ -95,11 +94,11 @@ The mass-scaling schedule is defined by $\eta_k = \frac{2\eta_*}{K} \min(k, K-k)
 For each MCMC iteration, the parameters $\hat\gamma$, $\bar\epsilon$, $\eta_*$, and $K$ are tuned, starting from the tuned values from the previous iteration (`tune=TRUE`), except that the tuning for $\eta_*$ starts from the previous value minus one (but always greater than or equal to 0.5).
 The maximum number of tuning cycles per MCMC iteration is `MaxTuningIter=70`.
 The `maxEta` parameter is tuned such that every coordinate of the simulated path reaches outside the interval `center_point[j]`$\pm$`search_scale[j]` at least once during the simulation, $j=1,\dots, d$, where $d$ is the space dimension (`maxEta_tuning_method="rectangular"`).
-If instead `maxEta_tuning_method="ellipsoidal"`, then an ellipsoidal search scope is used: $\max_{k\in 0\col K} \sum_{j=1}^d \{x_j\{k\} - x_j^0\}^2 / s_j^2 > d$, where $x_j\{k\}$ is the $j$-th coordinate of the $k$-th intermediate point along the numerically simulated path, $x^0$ is the `center_point`, and $s_j$ is the `search_scale`.
+If instead `maxEta_tuning_method="ellipsoidal"`, then an ellipsoidal search scope is used: $\max_{k\in 0:K} \sum_{j=1}^d \{x_j\{k\} - x_j^0\}^2 / s_j^2 > d$, where $x_j\{k\}$ is the $j$-th coordinate of the $k$-th intermediate point along the numerically simulated path, $x^0$ is the `center_point`, and $s_j$ is the `search_scale`.
 
 The output is a list consisting of several named entries.
 ```{r}
-chain
+str(chain)
 ```
 
 * `sumstat_MCMC`: a matrix with `niter+1` rows, where each row gives the `sumstat` function applied to a state in the constructed chain.
@@ -110,11 +109,6 @@ chain
 * `tuningIter_chrono`: a vector of length `niter` recording the number of tuning cycles for each MCMC iteration.
 * `Hinc_chrono`: a vector of length `niter` recording the net increase in Hamiltonian over the trajectory constructed after tuning for that iteration.
 
-As you can see from the plot below, ATHMC can construct chains that facilitate transitions between isolated modes for high-dimensional ($d=10000$), strongly-multimodal distributions.
-
-```{r}
-plot(chain$sumstat_MCMC)
-```
 
 ### References
 Park, J. (2024). Sampling from high-dimensional, multimodal distributions using automatically-tuned, tempered Hamiltonian Monte Carlo <https://doi.org/10.48550/arXiv.2111.06871>
