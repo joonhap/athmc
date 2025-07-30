@@ -4,12 +4,12 @@
 \alias{lf}
 \title{Leapfrog function}
 \usage{
-lf(x, v, gd, jsize, njumps, massInv = 1)
+lf(x, p, gd, jsize, njumps, massInv = 1, temperature = 1, bounds = NULL)
 }
 \arguments{
 \item{x}{a vector of initial position}
 
-\item{v}{a vector of initial velocity}
+\item{p}{a vector of initial momentum}
 
 \item{gd}{an R function that returns the gradient of log target density}
 
@@ -18,10 +18,14 @@ lf(x, v, gd, jsize, njumps, massInv = 1)
 \item{njumps}{number of leapfrog jumps}
 
 \item{massInv}{mass-inverse matrix (currently, it is allowed to be only a scalar or a vector of the same length as v. When scalar, this means that the mass-inverse matrix is that constant times the identity matrix, and if \code{massInv} is a vector, then the mass-inverse matrix is the diagonal matrix having the diagonal entries given by \code{massInv}.)}
+
+\item{temperature}{temperature value. The gradient of the potential function is divided by \code{temperature}.}
+
+\item{bounds}{upper or lower bounds for each variable can be given. Should be a 2-by-length(x.init) matrix (first row: lower bound, second row: upper bound) or NULL (no bounds). If given, the constructed trajectory will bounce on the boundary, so that it stays within the specified bounds. Defaults to NULL (no bounds specified).}
 }
 \value{
-A concatenated vector \code{c(x,v)} of the final position and velocity
+A concatenated vector \code{c(x,p)} of the final position and velocity
 }
 \description{
-carries out a certain number of leapfrog steps
+carries out a specified number of leapfrog steps
 }

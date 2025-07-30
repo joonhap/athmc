@@ -12,17 +12,26 @@ ATHMC(
   massInv = 1,
   niter,
   power = 2,
+  power.fixed = FALSE,
   jsize = 0.1,
-  maxEta = 1,
-  lenEta = 200,
+  jsize.fixed = TRUE,
+  bounds = NULL,
+  pilot_jsize_tune = FALSE,
+  pilot_target_avg_accep = 0.9,
+  maxEta = 0,
+  maxEta.fixed = FALSE,
+  nsteps = 50,
+  nsteps.fixed = FALSE,
+  target_avg_accep = 0.4,
   etaType = "piecewiselinear",
-  tune = TRUE,
-  MaxTuningIter = 70,
+  tune = FALSE,
   maxEta_tuning_method = "rectangular",
+  search_center,
   search_scale,
-  center_point,
   Uthreshold,
-  leapfrog
+  stay_at_maxEta = 0,
+  pbar.plot = NULL,
+  verbose = FALSE
 )
 }
 \arguments{
@@ -34,49 +43,67 @@ ATHMC(
 
 \item{sumstat}{an R function that is applied to the vector \code{x} to create a summary statistic for each MCMC iteration for output. Here \code{x} is the current state of the Markov chain. The return value should be a vector. The default is the identity function. This argument is useful for avoiding high memory usage when \code{x} is high dimensional.}
 
-\item{massInv}{mass-inverse matrix (currently, it is allowed to be only a scalar or a vector of the same length as v. When scalar, this means that the mass-inverse matrix is that constant times the identity matrix, and if \code{massInv} is a vector, then the mass-inverse matrix is the diagonal matrix having the diagonal entries given by \code{massInv}.)}
+\item{massInv}{inverse of the mass. a scalar, or a vector giving the diagonal entries of a diagonal matrix. A future upgrade of this package may support massInv that is a symmetric, positive definite matrix}
 
 \item{niter}{number of MCMC iterations. Note that the length of the constructed chain is \code{niter+1}, including the initial state.}
 
 \item{power}{starting value for the estimated polynomial degree of the (local) growth rate of the potential function. The leapfrog step size for each step is given by jsize\emph{exp(4}eta/(power+2))}
 
+\item{power.fixed}{logical. If TRUE, the provided value of \code{power} is used without change, even if \code{tune}=TRUE.}
+
 \item{jsize}{starting value for the baseline leapfrog step size}
 
-\item{maxEta}{starting value for the maximum of the eta sequence, which is one half times the log of the mass scaling factor (alpha)}
+\item{bounds}{upper or lower bounds for each variable can be given. Should be a 2-by-length(x.init) matrix (first row: lower bound, second row: upper bound) or NULL (no bounds).}
 
-\item{lenEta}{starting value for the length of the eta sequence.}
+\item{pilot_jsize_tune}{logical. If \code{TRUE}, standard HMC will be run to tune \code{jsize} (leapfrog step size), where maxEta is fixed (default value is 0). Useful for selecting the reference leapfrog step size (denoted epsilon-bar in Park (2025)) before running tempered HMC. \code{jsize} is adjusted so that the average acceptance rate is close to \code{pilot_target_avg_accep}. If \code{pilot_jsize_tune} is TRUE, \code{tune} is forced to be FALSE.}
+
+\item{pilot_target_avg_accep}{target acceptance probability when tuning jsize in a pliot run with maxEta=0}
+
+\item{maxEta}{starting value for the maximum of the eta sequence, which is one half times the log of the mass scaling factor (alpha)
+## maxEta: starting value for the maximum of the eta sequence, which is one half times the log of the mass scaling factor (alpha)}
+
+\item{maxEta.fixed}{logical. If TRUE, the provided value of \code{maxEta} is used without change, even if \code{tune}=TRUE.}
+
+\item{nsteps}{number of leapfrog steps if tune=FALSE or the starting number of leapfrog steps (while adaptive tuning) if tune=TRUE.}
+
+\item{nsteps.fixed}{logical. If TRUE, the provided value of \code{nsteps} is used without change, even if \code{tune}=TRUE.}
+
+\item{target_avg_accep}{target acceptance probability when tuning the rate at which eta changes. Used for adaptively tuning \code{nsteps}. \code{nsteps} is determined as the integer ceiling of 2\emph{maxEta/(etaRate}jsize).}
 
 \item{etaType}{either "piecewiselinear" or "sinusoidal". If "piecewiselinear", eta(k) = maxEta\emph{2/lenEta}min(k,lenEta-k), and if "sinusoidal", eta(k) = maxEta/2*(1-cos(2\emph{pi}k/lenEta)).}
 
-\item{tune}{logical. should \code{jsize}, \code{maxEta}, \code{lenEta}, \code{power} be tuned? If so, the provided values for these arguments are used as the starting point of tuning.}
+\item{tune}{logical. Should at least one of \code{maxEta}, \code{nsteps}, or \code{power} be tuned? If so, the provided values for these arguments are used as the starting point of tuning.}
 
-\item{MaxTuningIter}{the maximum number of tuning iterations before stopping further tuning, for each MCMC iteration}
+\item{maxEta_tuning_method}{tuning method for maxEta, one of "rectangular", "ellipsoidal", "Uthreshold", or "none". "rectangular" requires that for at least half of the coordinates, the simulated trajectory reaches both sides of the complement of the interval (\code{search_center} +- \code{search_scale}). "ellipsoidal" requires the simulated path to have a point that is at least a certain (scaled) Euclidean distance away from a specified center point. "Uthreshold" requires the simulated trajectory to attain a potential energy level higher than the provided value. If "none", no tuning of \code{maxEta} is carried out.}
 
-\item{maxEta_tuning_method}{tuning method for maxEta, one of "rectangular", "ellipsoidal", "Uthreshold", or "none". "rectangular" requires the simulated path to reach outside a certain interval for every coordinate axis at least once. "ellipsoidal" requires the simulated path to have a point that is at least a certain (scaled) Euclidean distance away from a specified center point. "Uthreshold" requires the simulated trajectory to attain a potential energy level higher than the provided value. If "none", no tuning of \code{maxEta} is carried out.}
+\item{search_center}{the center of search for isolated modes, used when \code{maxEta_tuning_method} is "rectangular" or "ellipsoidal". A vector of equal length as \code{x.init}. When missing, The default is set to \code{x.init}.}
 
 \item{search_scale}{a scalar or a vector of length \code{length(x.init)}, indicating the scale of search for isolated modes for each coordiate direction. If a scalar, every coordinate direction has the same search scale. For the "rectangular" tuning method, this gives the half-width of the interval for each coordinate direction with center at the corresponding entry in \code{center_point}. For "ellipsoidal" tuning method, this gives the coordinate-scale for the ellipsoid, scaled by sqrt(d) where d is the dimension of the target space, i.e., the criterion is distance^2 = sum((x-center_point)^2/search_scale^2) > d. Only used when \code{maxEta_tuning_method} is "rectangular" or "ellipsoidal".}
 
-\item{center_point}{the center of search for isolated modes, used when \code{maxEta_tuning_method} is "rectangular" or "ellipsoidal". A vector of equal length as \code{x.init}. When missing, The default is set to \code{x.init}.}
-
 \item{Uthreshold}{If \code{maxEta_tuning_method} is "Uthreshold", then this argument gives the target value that the potential function along the simulated trajectory should exceed at least once.}
 
-\item{leapfrog}{optional parameter. If this argument is not given, the default leapfrog function will be used (see R/leapfrog.R). Otherwise, a custom R function for the leapfrog function can be used (see, for example, R/leapfrog_sensor.R).}
+\item{stay_at_maxEta}{The proportion of time (in t-bar, which is approximately proportional to the number of leapfrog steps) at which the temperature (eta) stays at the maximum value. Default value is 0.}
+
+\item{pbar.plot}{The coordinates of the sequence of pbar (scaled momentum) to be plotted for each trajectory constructed. If NULL, no plot is generated.}
+
+\item{verbose}{logical. If TRUE, diagnostic messages will be printed for the ongoing tuning process.}
+
+\item{jsize.fixed:}{logical. If TRUE (default), jsize is not adaptively tuned when \code{tune}=TRUE. If FALSE, jsize is adaptively tuned when \code{tune}=TRUE.}
+
+\item{MaxTuningIter}{the maximum number of tuning iterations before stopping further tuning, for each MCMC iteration}
 }
 \value{
 A list consisting of several named entries. Note that \code{ATHMC} constructs a chain of length \code{niter+1}. The named entries are as follows.
 \itemize{
-\item{sumstat_MCMC: a matrix with \code{niter+1} rows, where each row gives the \code{sumstat} function applied to a state in the constructed chain.}
-\item{lenEta_chrono: a vector of length \code{niter+1} recording the tuned values for the length of the eta (mass-scaling) schedule at the end of each iteration. The first value gives the initial, supplied value.}
-\item{jsize_chrono: a vector of length \code{niter+1} recording the tuned values for the baseline leapfrog step size.}
-\item{power_chrono: a vector of length \code{niter+1} recording the estimated polynomial degree of the potential function growth (gamma-hat).}
-\item{maxEta_chrono: a vector of length \code{niter+1} recording the tuned maximum value of the eta sequence.}
-\item{tuningIter_chrono: a vector of length \code{niter} recording the number of tuning cycles for each MCMC iteration.}
-\item{Hinc_chrono: a vector of length \code{niter} recording the net increase in Hamiltonian over the trajectory constructed after tuning for that iteration.}
+\item{sumstat: a matrix with \code{niter+1} rows, where each row gives the \code{sumstat} function applied to a state in the constructed chain.}
+\item{jsize_chrono: If \code{pilot_jsize_tune} is TRUE, \code{jsize_chrono} gives the sequence of \code{jsize} (leapfrog step size) values obtained during the tuning process. If 'pilot_jsize_tune\verb{ is FALSE, 'jsize_chrono} returns the scalar value of \code{jsize}.}
+\item{nsteps_chrono: If \code{nsteps} is tuned, a vector of length \code{niter+1} recording the tuned values for the length of the eta (temperature) schedule at the end of each iteration. The first value gives the initial, supplied value. If nsteps is not tuned, return the supplied scalar value of \code{nsteps}.}
+\item{power_chrono: If \code{power} is tuned, a vector of length \code{niter+1} recording the estimated polynomial degree of the potential function growth (gamma-hat). Otherwise, the provided value of \verb{power' (scalar).\} \\item\{maxEta_chrono: If }maxEta\verb{is tuned, a vector of length}niter+1\verb{recording the tuned maximum value of the eta sequence. Otherwise, the scalar value of the provided}maxEta\verb{.\} \\item\{Hinc_chrono: a vector of length }niter` recording the net increase in Hamiltonian over the trajectory.}
 }
 }
 \description{
-runs tempered Hamiltonian Monte Carlo that facilitates sampling from high-dimensional, strongly multimodal distributions with the capability of automatic tuning. See Park (2024) for details.
+runs tempered Hamiltonian Monte Carlo that facilitates sampling from high-dimensional, strongly multimodal distributions with the capability of automatic tuning. See Park (2025) for details.
 }
 \references{
-Park, J. (2024). Sampling from high-dimensional, multimodal distributions using automatically-tuned, tempered Hamiltonian Monte Carlo \url{https://doi.org/10.48550/arXiv.2111.06871}
+Park, J. (2025). Sampling from high-dimensional, multimodal distributions using automatically-tuned, tempered Hamiltonian Monte Carlo \url{https://doi.org/10.48550/arXiv.2111.06871}
 }

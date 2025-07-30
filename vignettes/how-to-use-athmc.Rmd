@@ -18,7 +18,7 @@ knitr::opts_chunk$set(
 
 ## Introduction
 This tutorial gives a brief introduction to the package `ATHMC` and explains how to use it using examples.
-This package implements automatically-tuned, tempered Hamiltonian Monte Carlo developed by Park, J. (2024) "Sampling from high-dimensional, multimodal distribution using automatically-tuned, tempered Hamiltonian Monte Carlo" https://doi.org/10.48550/arXiv.2111.06871 
+This package implements automatically-tuned, tempered Hamiltonian Monte Carlo developed by Park, J. (2025) "Sampling from high-dimensional, multimodal distribution using automatically-tuned, tempered Hamiltonian Monte Carlo" https://doi.org/10.48550/arXiv.2111.06871 
 
 ## Installation
 The package can be installed from the [package author's github repository](https://github.com/joonhap/athmc) as follows.
@@ -30,8 +30,7 @@ Then install the `athmc` package:
 ```{r eval=FALSE}
 devtools::install_github("joonhap/athmc")
 ```
-The package source code may be downloaded in tar.gz format [from here](.) (not active yet, as of Mar 2024).
-The package can be loaded as usual:
+The package can then be loaded as usual:
 ```{r}
 library(ATHMC)  
 ```
@@ -77,39 +76,48 @@ closest_mode <- function(x) {
 
 ## Running ATHMC
 ```{r}
-niter <- 20 # length of each constructed chain
-power.truth <- 2 # the polynomial degree of U is 2. That is, the target is a mixture of Gaussians.
-## construct a chain
-set.seed(829857)
+gamma <- 2 # the polynomial degree of U is 2. That is, the target is a mixture of Gaussians.
+logtarget <- function(x) { target(x, gamma, TRUE) };
+gradlt <- function(x) { gd.target(x, gamma) }
+## Pilot run to find a mode and tune the reference leapfrog step size
+set.seed(724908)
 x.init <- modes[1,] + comp.sd*rnorm(x.d)
-logtarget <- function(x) { target(x, power.truth, TRUE) };
-gradlt <- function(x) { gd.target(x, power.truth) }
-chain <- ATHMC(x.init, logtarget, gradlt, sumstat=closest_mode, massInv=1, niter, power=1, jsize=0.1, maxEta=5, lenEta=200, etaType="piecewiselinear", tune=TRUE, MaxTuningIter=70, maxEta_tuning_method="rectangular", search_scale=rep(7,x.d), center_point=rep(0,x.d))
+pilot_iter <- 20
+pilot <- ATHMC(xinit, loglik, gd.loglik, sumstat=identity, massInv=1, niter=pilot_iter, jsize=0.01, bounds=NULL, nsteps=100, pilot_jsize_tune=TRUE, target_avg_accep=0.5, verbose=TRUE, pbar.plot=NULL)
+xnewinit <- pilot$sumstat[pilot_iter+1,]
+jsize <- pilot$jsize_chrono[pilot_iter+1]*.5 # reduce the tuned jsize (for robustness)
+## construct a chain
+niter <- 100 # length of each constructed chain
+athmcOut <- ATHMC(xnewinit, logtarget, gd.logtarget, sumstat=identity, niter=niter, power=2, power.fixed=FALSE, jsize=jsize, nsteps=1000, nsteps.fixed=FALSE, maxEta=2.5, maxEta.fixed=FALSE, tune=TRUE, target_avg_accep=0.05, maxEta_tuning_method="Uthreshold", Uthreshold=Uthreshold, pbar.plot=NULL, verbose=TRUE)
 ```
 
-The above code constructs a chain using ATHMC with the given initial state `x.init` for the target density defined above.
-The constructed chain length is 151 (`niter`$+1$, including the initial state). 
-The starting values for the tuning parameters are as follows: the estimated polynomial degree of $U$, $\hat\gamma=1$ (`power`), the baseline leapfrog step size $\bar\epsilon=0.1$ (`jsize`), the maximum value of the mass-scaling schedule $\eta_*=5$ (`maxEta`), the length of the mass-scaling schedule $K=200$ (`lenEta`).
-The mass-scaling schedule is defined by $\eta_k = \frac{2\eta_*}{K} \min(k, K-k)$, $k=0, \frac{1}{2}, 1, \dots, K-\frac{1}{2}, K$ (`etaType="piecewiselinear"`).
-For each MCMC iteration, the parameters $\hat\gamma$, $\bar\epsilon$, $\eta_*$, and $K$ are tuned, starting from the tuned values from the previous iteration (`tune=TRUE`), except that the tuning for $\eta_*$ starts from the previous value minus one (but always greater than or equal to 0.5).
-The maximum number of tuning cycles per MCMC iteration is `MaxTuningIter=70`.
-The `maxEta` parameter is tuned such that every coordinate of the simulated path reaches outside the interval `center_point[j]`$\pm$`search_scale[j]` at least once during the simulation, $j=1,\dots, d$, where $d$ is the space dimension (`maxEta_tuning_method="rectangular"`).
-If instead `maxEta_tuning_method="ellipsoidal"`, then an ellipsoidal search scope is used: $\max_{k\in 0:K} \sum_{j=1}^d \{x_j\{k\} - x_j^0\}^2 / s_j^2 > d$, where $x_j\{k\}$ is the $j$-th coordinate of the $k$-th intermediate point along the numerically simulated path, $x^0$ is the `center_point`, and $s_j$ is the `search_scale`.
+The above code first tunes the reference leapfrog step size (denoted by $\bar{\epsilon}$ in Park (2025)) by running HMC without tempering.
+This pilot run also locates a mode.
+
+Next, using the tuned reference step size and a new initial state, tempered Hamiltonian Monte Carlo is run with adaptive tuning for
+* `power`: the estimated polynomial degree of $U$ (i.e., $\hat\gamma$ in the paper),
+* `maxEta`: the maximum value of the log-temperature (i.e., $\eta_*$), 
+* `nsteps`: the length of the leapfrog trajectory (i.e., $K$).
+The constructed Markov chain length is `niter`$+1$, including the initial state. 
+The log-temperature schedule is specified as $\eta_k = \frac{2\eta_*}{K} \min(k, K-k)$, if `etaType="piecewiselinear"` (the default).
+For each MCMC iteration, the parameters $\hat\gamma$, $\eta_{*}$, and $K$ are tuned, unless each parameter is excluded from tuning by setting, e.g., `power.fixed=TRUE`.
+If `maxEta_tuning_method="rectangular"`, the `maxEta` parameter is tuned such that at least half of the coordinates of the simulated trajectory reach both sides of the complement of the interval `search_center[j]`$\pm$`search_scale[j]` at least once during the simulation. 
+If `maxEta_tuning_method="ellipsoidal"`, then an ellipsoidal search scope is used: $\max_{k\in 0:K} \sum_{j=1}^d \{x_j\{k\} - x_j^0\}^2 / s_j^2 > d$, where $x_j\{k\}$ is the $j$-th coordinate of the $k$-th intermediate point along the simulated trajectory, $x^0$ is the `search_center`, and $s_j$ is the `search_scale`.
+If `maxEta_tuning_method="Uthreshold"`, the potential function should exceed `Uthreshold` at least once along the simulated trajectory to satisfy the search criterion.
 
 The output is a list consisting of several named entries.
 ```{r}
 str(chain)
 ```
 
-* `sumstat_MCMC`: a matrix with `niter+1` rows, where each row gives the `sumstat` function applied to a state in the constructed chain.
-* `lenEta_chrono`: a vector of length `niter+1` recording the tuned values for the length of the eta (mass-scaling) schedule at the end of each iteration. The first value gives the initial, supplied value.
-* `jsize_chrono`: a vector of length `niter+1` recording the tuned values for the baseline leapfrog step size.
+* `sumstat`: a matrix with `niter+1` rows, where each row gives the `sumstat` function applied to a state in the constructed chain.
+* `jsize_chrono`: for pilot HMC run, this returns a vector of length `niter+1` recording the the reference leapfrog step size during the tuning process.
+* `nsteps_chrono`: a vector of length `niter+1` recording the tuned values for the length of the eta (log-temperature) schedule at the end of each iteration. The first value gives the initial, supplied value.
 * `power_chrono`: a vector of length `niter+1` recording the estimated polynomial degree of the potential function growth ($\hat\gamma$).}
 * `maxEta_chrono`: a vector of length `niter+1` recording the tuned maximum value of the eta sequence.}
-* `tuningIter_chrono`: a vector of length `niter` recording the number of tuning cycles for each MCMC iteration.
 * `Hinc_chrono`: a vector of length `niter` recording the net increase in Hamiltonian over the trajectory constructed after tuning for that iteration.
 
 
 ### References
-Park, J. (2024). Sampling from high-dimensional, multimodal distributions using automatically-tuned, tempered Hamiltonian Monte Carlo <https://doi.org/10.48550/arXiv.2111.06871>
+Park, J. (2025). Sampling from high-dimensional, multimodal distributions using automatically-tuned, tempered Hamiltonian Monte Carlo <https://doi.org/10.48550/arXiv.2111.06871>
 
